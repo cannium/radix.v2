@@ -4,9 +4,15 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"reflect"
+	"strconv"
 	"time"
+)
+
+const (
+	maxBufferSize = 1 << 20 // 1 MB
 )
 
 // ErrPipelineEmpty is returned from PipeResp() to indicate that all commands
@@ -87,6 +93,111 @@ func (c *Client) Cmd(cmd string, args ...interface{}) *Resp {
 		return NewRespIOErr(err)
 	}
 	return c.readResp(true)
+}
+
+type bulkStringReader struct {
+	r           io.Reader
+	ContentSize int
+	readSize    int // size user already read
+}
+
+func (b *bulkStringReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.readSize += n
+	return n, err
+}
+
+func (b *bulkStringReader) discardRemainder() error {
+	sizeRemain := b.ContentSize - b.readSize + 2 // +2 for trailing \r\n
+	var buf []byte
+	for sizeRemain > 0 {
+		var n int
+		var err error
+		if sizeRemain >= maxBufferSize {
+			if buf == nil {
+				// allocates maxBufferSize at most
+				buf = make([]byte, maxBufferSize)
+			}
+			n, err = b.r.Read(buf)
+		} else {
+			buf = make([]byte, sizeRemain)
+			n, err = b.r.Read(buf)
+		}
+
+		if err != nil {
+			return err
+		}
+		sizeRemain -= n
+	}
+	return nil
+}
+
+func newBulkStringReader(conn io.Reader) (*bulkStringReader, error) {
+	buf := make([]byte, 1) // read protocol header byte by byte
+	n, err := conn.Read(buf)
+	if err != nil || n != 1 {
+		return nil, errParse
+	}
+	if buf[0] != bulkStrPrefix[0] {
+		return nil, errBadType
+	}
+	sizeBuf := make([]byte, 0)
+FOR:
+	for {
+		n, err = conn.Read(buf)
+		if err != nil || n != 1 {
+			return nil, errParse
+		}
+		switch buf[0] {
+		case "-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			sizeBuf = append(sizeBuf, buf[0])
+		case delim[0]: // got '\r', continue to read '\n'
+			n, err = conn.Read(buf)
+			if err != nil || n != 1 || buf[0] != delim[1] {
+				return nil, errParse
+			}
+			break FOR
+		default:
+			return nil, errParse
+		}
+	}
+
+	size, err := strconv.ParseInt(string(sizeBuf), 10, 64)
+	if err != nil {
+		return nil, errParse
+	}
+	return &bulkStringReader{
+		r:           conn,
+		ContentSize: size,
+		readSize:    0,
+	}, nil
+}
+
+// Suit for Redis commands return bulk strings, no buffer included
+// Redis bulk string supports value up to 512MB, use io.Reader would reduce
+// memory consumption and memory copy time
+func (c *Client) RawResponseCmd(read func(io.Reader) error,
+	cmd string, args ...interface{}) error {
+
+	err := c.writeRequest(request{cmd, args})
+	if err != nil {
+		return NewRespIOErr(err)
+	}
+	r, err := newBulkStringReader(c.conn)
+	if err != nil {
+		return err
+	}
+
+	limitedReader := io.LimitReader(r, int64(r.ContentSize))
+	err = read(limitedReader)
+	go func() {
+		clientError := r.discardRemainder()
+		if clientError != nil {
+			c.LastCritical = clientError
+			c.Close()
+		}
+	}()
+	return err
 }
 
 // PipeAppend adds the given call to the pipeline queue.
