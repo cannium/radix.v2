@@ -296,9 +296,22 @@ outer:
 		}
 
 		for _, arg := range requests[i].args {
-			_, err = writeTo(c.writeBuf, c.writeScratch, arg, true, true)
-			if err != nil {
-				break outer
+			switch a := arg.(type) {
+			case func(io.Writer) error:
+				// flush buffer contents into socket first
+				if _, err = c.writeBuf.WriteTo(c.conn); err != nil {
+					break outer
+				}
+				c.writeBuf.Reset()
+
+				if err = a(c.conn); err != nil {
+					break outer
+				}
+			default:
+				_, err = writeTo(c.writeBuf, c.writeScratch, arg, true, true)
+				if err != nil {
+					break outer
+				}
 			}
 		}
 
