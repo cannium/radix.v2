@@ -152,7 +152,7 @@ FOR:
 			return nil, errParse
 		}
 		switch buf[0] {
-		case "-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			sizeBuf = append(sizeBuf, buf[0])
 		case delim[0]: // got '\r', continue to read '\n'
 			n, err = conn.Read(buf)
@@ -165,7 +165,7 @@ FOR:
 		}
 	}
 
-	size, err := strconv.ParseInt(string(sizeBuf), 10, 64)
+	size, err := strconv.Atoi(string(sizeBuf))
 	if err != nil {
 		return nil, errParse
 	}
@@ -188,7 +188,7 @@ func (c *Client) RawResponseCmd(read func(io.Reader) error,
 
 	err = c.writeRequest(request{cmd, args})
 	if err != nil {
-		return 0, NewRespIOErr(err)
+		return 0, err
 	}
 	r, err := newBulkStringReader(c.conn)
 	if err != nil {
@@ -292,7 +292,7 @@ type BulkStringWriter struct {
 }
 
 func (b BulkStringWriter) write(w io.Writer) (written int64, err error) {
-	lengthStr := []byte(strconv.Itoa(b.ContentSize))
+	lengthStr := []byte(strconv.FormatInt(b.ContentSize, 10))
 
 	written, err = writeBytesHelper(w, bulkStrPrefix, written, err)
 	written, err = writeBytesHelper(w, lengthStr, written, err)
