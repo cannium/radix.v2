@@ -286,6 +286,25 @@ func (c *Client) readResp(strict bool) *Resp {
 	return r
 }
 
+type BulkStringWriter struct {
+	WriteFunc   func(io.Writer) error
+	ContentSize int64
+}
+
+func (b *BulkStringWriter) write(w io.Writer) (written int64, err error) {
+	lengthStr := []byte(strconv.Itoa(b.ContentSize))
+
+	written, err = writeBytesHelper(w, bulkStrPrefix, written, err)
+	written, err = writeBytesHelper(w, lengthStr, written, err)
+	written, err = writeBytesHelper(w, delim, written, err)
+	if err != nil {
+		return
+	}
+	err = b.WriteFunc(w)
+	written, err = writeBytesHelper(w, delim, written, err)
+	return
+}
+
 func (c *Client) writeRequest(requests ...request) error {
 	if c.timeout != 0 {
 		c.conn.SetWriteDeadline(time.Now().Add(c.timeout))
@@ -307,14 +326,14 @@ outer:
 
 		for _, arg := range requests[i].args {
 			switch a := arg.(type) {
-			case func(io.Writer) error:
+			case BulkStringWriter:
 				// flush buffer contents into socket first
 				if _, err = c.writeBuf.WriteTo(c.conn); err != nil {
 					break outer
 				}
 				c.writeBuf.Reset()
 
-				if err = a(c.conn); err != nil {
+				if n, err := a.write(c.conn); err != nil || n != a.ContentSize {
 					break outer
 				}
 			default:
