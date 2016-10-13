@@ -291,7 +291,7 @@ type BulkStringWriter struct {
 	ContentSize int64
 }
 
-func (b *BulkStringWriter) write(w io.Writer) (written int64, err error) {
+func (b BulkStringWriter) write(w io.Writer) (written int64, err error) {
 	lengthStr := []byte(strconv.Itoa(b.ContentSize))
 
 	written, err = writeBytesHelper(w, bulkStrPrefix, written, err)
