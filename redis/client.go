@@ -108,6 +108,9 @@ func (b *bulkStringReader) Read(p []byte) (int, error) {
 }
 
 func (b *bulkStringReader) discardRemainder() error {
+	if b.r == nil {
+		return nil
+	}
 	sizeRemain := b.ContentSize - b.readSize + 2 // +2 for trailing \r\n
 	var buf []byte
 	for sizeRemain > 0 {
@@ -166,6 +169,10 @@ FOR:
 	if err != nil {
 		return nil, errParse
 	}
+	if size < 0 {
+		// a "null bulk string" if size < 0
+		return nil, nil
+	}
 	return &bulkStringReader{
 		r:           conn,
 		ContentSize: size,
@@ -177,15 +184,18 @@ FOR:
 // Redis bulk string supports value up to 512MB, use io.Reader would reduce
 // memory consumption and memory copy time
 func (c *Client) RawResponseCmd(read func(io.Reader) error,
-	cmd string, args ...interface{}) error {
+	cmd string, args ...interface{}) (readSize int, err error) {
 
-	err := c.writeRequest(request{cmd, args})
+	err = c.writeRequest(request{cmd, args})
 	if err != nil {
-		return NewRespIOErr(err)
+		return 0, NewRespIOErr(err)
 	}
 	r, err := newBulkStringReader(c.conn)
 	if err != nil {
-		return err
+		return 0, err
+	}
+	if r == nil {
+		return 0, nil
 	}
 
 	limitedReader := io.LimitReader(r, int64(r.ContentSize))
@@ -197,7 +207,7 @@ func (c *Client) RawResponseCmd(read func(io.Reader) error,
 			c.Close()
 		}
 	}()
-	return err
+	return r.readSize, err
 }
 
 // PipeAppend adds the given call to the pipeline queue.
